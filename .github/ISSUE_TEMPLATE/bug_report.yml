@@ -1,0 +1,43 @@
+name: Bug report / Báo lỗi
+description: Something does not work as expected. / Có gì đó chạy sai.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version / Phiên bản
+      description: From the app's About dialog or `--version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system / Hệ điều hành
+      placeholder: Windows 11 24H2, Ubuntu 24.04, macOS 15...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Các bước tái hiện
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual / Mong đợi và thực tế
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots / Nhật ký hoặc ảnh chụp
+      render: text
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Not a security issue / Không phải lỗ hổng bảo mật
+      options:
+        - label: This is not a security vulnerability (those go to Security → Report a vulnerability).
+          required: true
