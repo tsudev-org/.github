@@ -1,0 +1,9 @@
+# Cập nhật phiên bản action đã ghim SHA (scorecard.yml). Phiếu 20261115-01.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
