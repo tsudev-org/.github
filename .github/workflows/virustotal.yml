@@ -1,0 +1,176 @@
+name: VirusTotal (dùng chung)
+
+# Workflow DÙNG CHUNG (workflow_call) cho mọi repo app tsudev: gửi tệp của một Release lên VirusTotal, chờ kết quả,
+# ghi bảng link báo cáo vào Release notes; có engine gắn cờ ⇒ đưa Release về NHÁP và báo đỏ.
+# Chuẩn: tsudev-standards v3.7.0 `docs/DISTRIBUTION_TRUST.md` mục 3 + mục 7; phiếu toàn hệ 20261117-P2 (P1 bước 3).
+#
+# Cách gọi (trong workflow phát hành của repo app, SAU job tạo Release, TRƯỚC khi công bố/đẩy kênh):
+#
+#   virustotal:
+#     needs: release
+#     permissions:
+#       contents: write          # đọc Release nháp, sửa notes, đưa về nháp khi bị gắn cờ
+#     uses: tsudev-org/.github/.github/workflows/virustotal.yml@<SHA ghim>   # ghim SHA như mọi action
+#     with:
+#       tag: ${{ needs.release.outputs.tag }}
+#     secrets:
+#       VT_API_KEY: ${{ secrets.VT_API_KEY }}
+#
+# Chưa có `VT_API_KEY` (👤 phiếu P2 mục 4.3) ⇒ job XANH, ghi notice "bỏ qua" - không chặn phát hành.
+# API miễn phí: 4 lượt/phút, 500 lượt/ngày, tệp tối đa 650 MB ⇒ workflow tự giãn nhịp 16 giây/lượt; tệp đã có trên
+# VirusTotal (cùng SHA-256) dùng lại kết quả, không tải lên lại.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Thẻ Release cần quét (Release có thể đang là nháp).
+        required: true
+        type: string
+      patterns:
+        description: >-
+          Mẫu tên tệp cần quét, cách nhau bởi dấu cách (glob của `gh release download -p`). Rỗng = mọi tệp trừ tệp
+          kiểm/chứng thực/SBOM (SHA256SUMS*, *.sigstore.json, *.intoto.jsonl, *.spdx.json, *.cdx.json, *.sig, *.asc).
+        required: false
+        type: string
+        default: ''
+      draft-on-flag:
+        description: Có engine gắn cờ (malicious + suspicious > 0) thì đưa Release về nháp.
+        required: false
+        type: boolean
+        default: true
+      write-notes:
+        description: Ghi/thay khối "VirusTotal" trong Release notes.
+        required: false
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: Thời gian chờ tối đa cho MỖI tệp mới tải lên.
+        required: false
+        type: number
+        default: 20
+    secrets:
+      VT_API_KEY:
+        required: false
+    outputs:
+      flagged:
+        description: '"true" nếu có tệp bị gắn cờ, "false" nếu sạch, "skipped" nếu chưa có khoá.'
+        value: ${{ jobs.scan.outputs.flagged }}
+
+permissions: {}
+
+jobs:
+  scan:
+    name: VirusTotal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      flagged: ${{ steps.vt.outputs.flagged }}
+    steps:
+      - name: Quét tệp Release
+        id: vt
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          PATTERNS: ${{ inputs.patterns }}
+          DRAFT_ON_FLAG: ${{ inputs.draft-on-flag }}
+          WRITE_NOTES: ${{ inputs.write-notes }}
+          WAIT_MIN: ${{ inputs.timeout-minutes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${VT_API_KEY:-}" ]]; then
+            echo "::notice::Chưa có bí mật VT_API_KEY - bỏ qua quét VirusTotal (phiếu 20261117-P2 mục 4.3)."
+            echo "### VirusTotal: bỏ qua (chưa có \`VT_API_KEY\`)" >> "$GITHUB_STEP_SUMMARY"
+            echo "flagged=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          API=https://www.virustotal.com/api/v3
+          vt() { sleep 16; curl -sS --retry 3 --retry-delay 20 -H "x-apikey: $VT_API_KEY" "$@"; }
+
+          mkdir -p "$RUNNER_TEMP/vt" && cd "$RUNNER_TEMP/vt"
+          args=()
+          for p in $PATTERNS; do args+=(-p "$p"); done
+          gh release download "$TAG" -R "$REPO" "${args[@]}" --clobber
+
+          shopt -s nullglob
+          rows=() ; flagged=0
+          for f in *; do
+            case "$f" in
+              SHA256SUMS*|*.sigstore.json|*.intoto.jsonl|*.spdx.json|*.cdx.json|*.sig|*.asc) continue ;;
+            esac
+            sha=$(sha256sum "$f" | cut -d' ' -f1)
+            size=$(stat -c %s "$f")
+            link="https://www.virustotal.com/gui/file/$sha"
+
+            stats=$(vt "$API/files/$sha" | jq -c '.data.attributes.last_analysis_stats // empty' || true)
+            if [[ -z "$stats" || "$(jq '[.[]] | add // 0' <<<"$stats")" == "0" ]]; then
+              if (( size > 650*1024*1024 )); then
+                echo "::warning::$f lớn hơn 650 MB - VirusTotal không nhận, bỏ qua."
+                rows+=("| \`$f\` | - | quá 650 MB, không quét |"); continue
+              fi
+              if (( size > 32*1024*1024 )); then
+                url=$(vt "$API/files/upload_url" | jq -r '.data')
+              else
+                url="$API/files"
+              fi
+              aid=$(vt -F "file=@$f" "$url" | jq -r '.data.id // empty')
+              [[ -n "$aid" ]] || { echo "::error::Không tải được $f lên VirusTotal."; exit 1; }
+              deadline=$(( $(date +%s) + WAIT_MIN*60 ))
+              until [[ "$(vt "$API/analyses/$aid" | jq -r '.data.attributes.status')" == "completed" ]]; do
+                (( $(date +%s) < deadline )) || { echo "::error::Hết giờ chờ VirusTotal cho $f ($link)."; exit 1; }
+                sleep 30
+              done
+              stats=$(vt "$API/files/$sha" | jq -c '.data.attributes.last_analysis_stats')
+            fi
+
+            mal=$(jq '.malicious // 0' <<<"$stats"); sus=$(jq '.suspicious // 0' <<<"$stats")
+            tot=$(jq '[.[]] | add // 0' <<<"$stats")
+            if (( mal + sus > 0 )); then
+              flagged=1
+              echo "::error::$f bị $mal engine gắn cờ độc hại, $sus nghi ngờ: $link"
+              rows+=("| \`$f\` | ⚠ $mal độc hại, $sus nghi ngờ / $tot | [báo cáo]($link) |")
+            else
+              rows+=("| \`$f\` | 0 / $tot | [báo cáo]($link) |")
+            fi
+          done
+
+          {
+            echo "<!-- virustotal:start -->"
+            echo "### VirusTotal"
+            echo
+            echo "| Tệp | Engine gắn cờ | Báo cáo |"
+            echo "| --- | --- | --- |"
+            printf '%s\n' "${rows[@]}"
+            echo "<!-- virustotal:end -->"
+          } > "$RUNNER_TEMP/vt-khoi.md"
+          cat "$RUNNER_TEMP/vt-khoi.md" >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$WRITE_NOTES" == "true" ]]; then
+            gh release view "$TAG" -R "$REPO" --json body -q .body > "$RUNNER_TEMP/body.md"
+            # Thay khối cũ (chạy lại) hoặc nối vào cuối.
+            python3 -I - "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/vt-khoi.md" <<'PY'
+          import re, sys
+          body = open(sys.argv[1], encoding="utf-8").read()
+          khoi = open(sys.argv[2], encoding="utf-8").read().strip()
+          pat = re.compile(r"<!-- virustotal:start -->.*?<!-- virustotal:end -->", re.S)
+          body = pat.sub(lambda _: khoi, body) if pat.search(body) else body.rstrip() + "\n\n" + khoi + "\n"
+          open(sys.argv[1], "w", encoding="utf-8").write(body)
+          PY
+            gh release edit "$TAG" -R "$REPO" --notes-file "$RUNNER_TEMP/body.md"
+          fi
+
+          if (( flagged )); then
+            echo "flagged=true" >> "$GITHUB_OUTPUT"
+            if [[ "$DRAFT_ON_FLAG" == "true" ]]; then
+              gh release edit "$TAG" -R "$REPO" --draft=true
+              echo "::error::Release $TAG đã đưa về NHÁP. Nộp báo nhầm theo DISTRIBUTION_TRUST.md mục 3, ghi vào logs/."
+            fi
+            exit 1
+          fi
+          echo "flagged=false" >> "$GITHUB_OUTPUT"
