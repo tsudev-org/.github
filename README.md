@@ -9,3 +9,4 @@ issue and pull request templates, funding link) that GitHub applies to every rep
 | Tệp | Việc | Cách gọi |
 | --- | --- | --- |
 | `.github/workflows/virustotal.yml` | Quét tệp của một Release trên VirusTotal, ghi link báo cáo vào Release notes, có engine gắn cờ ⇒ Release về nháp (`DISTRIBUTION_TRUST.md` mục 3). Chưa có `VT_API_KEY` ⇒ bỏ qua, không chặn. | `uses: tsudev-org/.github/.github/workflows/virustotal.yml@<SHA>` - ví dụ đầy đủ ở đầu tệp |
+| `.github/workflows/apple-ios-testflight.yml` | Ký "Apple Distribution" + tải bản iOS (Flutter) lên TestFlight: Xcode ghim (chặn beta), Flutter ghim nhãn + commit, Team ID ghim, kiểm deployment target 15.0-16.0, PrivacyInfo, khai mã hoá, phần mở rộng; keychain tạm dọn `if: always()`. `team-id-pin` trống ⇒ không chạy (`APPLE_CICD.md` của bộ quy ước). | `uses: tsudev-org/.github/.github/workflows/apple-ios-testflight.yml@<SHA>` + `secrets: inherit` - mẫu ở `templates/apple/apple-testflight.yml` của bộ quy ước |
